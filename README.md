@@ -1,38 +1,174 @@
-# OSY: Automatická registrace Debianu 13 do Zabbixu
+# Debian 13 VM se Zabbix Agent 2 (Vagrant)
 
-![Virtuální server s Debianem 13 propojený se Zabbix monitoringem](Images/debian13-zabbix-agent2-hero.webp)
+Postup, jak pomocí Vagrantu vytvořit virtuální stroj s Debianem 13, nainstalovat na něj Zabbix Agent 2 a nechat ho automaticky zaregistrovat na monitorovacím serveru `enceladus.pfsense.cz`.
 
-Toto je šablona zadání pro výuku předmětu OSY na [osy.sposdk.cz](https://osy.sposdk.cz/). Z této šablony vznikne váš vlastní žákovský repozitář. Pracujte a odevzdávejte změny v něm.
+## Obsah repozitáře
 
-## Cíl úlohy
-
-Spusťte pomocí Vagrantu virtuální stroj s **Debianem 13**. Nainstalujte na něj **Zabbix Agent 2 verze 8.0 LTS** a nastavte jeho automatickou registraci na server `enceladus.pfsense.cz`. Instalace a konfigurace agenta musí proběhnout automaticky prostřednictvím provisioningu ve `Vagrantfile`; ruční instalace uvnitř virtuálního stroje nestačí. Vzorové skripty najdete v adresáři [`Example/`](Example/). Výsledkem má být funkční, monitorovaný host s vaším jedinečným názvem.
+| Soubor | Účel |
+|---|---|
+| `Vagrantfile` | Definice VM (box, síť, provisioning) |
+| `install-zabbix-agent2.sh` | Instalace Zabbix Agent 2 z oficiálního repozitáře |
+| `configure-zabbix-agent2.sh` | Konfigurace agenta (hostname, server, metadata) |
+| `id_rsa.pub` | Veřejný SSH klíč nahrávaný do VM |
+| `id_rsa` | Soukromý SSH klíč (**nikdy ho necommitovat**) |
 
 ## Požadavky
 
-1. Vytvořte v kořeni svého repozitáře `Vagrantfile` pro Debian 13. Jako výchozí bod můžete použít [`Vagrant/Vagrantfile-debian`](Vagrant/Vagrantfile-debian).
-2. Připravte vlastní instalační a konfigurační skripty a zapojte je jako Vagrant provisionery. Instalace musí používat **oficiální repozitář Zabbix 8.0 pro Debian 13**, nikoli balíček starší verze nebo balíček z výchozího repozitáře Debianu.
-3. Nastavte v agentovi `Server` a `ServerActive` na `enceladus.pfsense.cz`, `HostMetadata=SPOS` a jedinečný `Hostname`. Název hosta musí zůstat stejný po restartu virtuálního stroje i po opakovaném spuštění provisioningu.
-4. Registrace proběhne na Zabbix serveru `enceladus.pfsense.cz`, kde jsou již připravena pravidla pro hosty s `HostMetadata=SPOS`. Po registraci ověřte, že má váš host přiřazenou skupinu, štítek a šablonu pro monitoring Linuxu agentem 2.
-5. Ověřte, že se host v Zabbixu skutečně objevil a že z něj přicházejí data.
+- VirtualBox
+- Vagrant
+- OpenSSH klient (ve Windows 10/11 je součástí systému, příkaz `ssh-keygen`)
+- Přístup ze sítě k `enceladus.pfsense.cz` na portu 10051 (školní síť nebo VPN)
 
-## Stručná nápověda k postupu
+## 1. Vygenerování SSH klíče
 
-- Projděte si ukázku v adresáři [`Example/`](Example/). Je určena pro starší Ubuntu a starší Zabbix: použijte ji jen jako inspiraci pro strukturu Vagrantfile a skriptů.
-- Na [stránce ke stažení Zabbixu](https://www.zabbix.com/download) vyberte větev **8.0 LTS**, distribuci **Debian 13** a komponentu **Agent 2**. Získané instalační kroky převeďte do skriptu. Po instalaci zkontrolujte verzi agenta a stav služby.
-- V konfiguraci `/etc/zabbix/zabbix_agent2.conf` se zaměřte na parametry `Hostname`, `Server`, `ServerActive` a `HostMetadata`. Automatickou registraci zahajuje aktivní spojení agenta se serverem.
-- Při hledání chyby ověřte dostupnost serveru `enceladus.pfsense.cz`, stav služby `zabbix-agent2` a její záznamy v systémovém žurnálu.
+Ve složce s Vagrantfilem (PowerShell):
 
-## Co odevzdat
+```powershell
+ssh-keygen -t rsa -b 4096 -f id_rsa -N '""'
+```
 
-Ve svém žákovském repozitáři doporučujeme odstranit vše, co jste ze šablony nevyužili, a ponechat jen soubory potřebné k odevzdání:
+Vzniknou soubory `id_rsa` (soukromý) a `id_rsa.pub` (veřejný). Veřejný klíč se při provisioningu nahraje do VM, abychom se mohli připojit přes SSH.
 
-- Funkční `Vagrantfile` a vlastní instalační a konfigurační skripty, které automaticky připraví agenta.
-- V adresáři `Images/` snímky obrazovky dokazující **registraci hosta s vaším jedinečným názvem** a **funkční monitorování** (například aktuálně přijímaná data v Zabbixu).
-- Upravený `README.md` se stručným popisem postupu práce, způsobem spuštění a ověření výsledku. Můžete do něj přidat také vlastní tematický obrázek.
+> Soukromý klíč patří do `.gitignore`. Pokud se někdy dostal na veřejné místo, vygenerujte nový.
 
-## Dokumentace
+## 2. Vagrantfile
 
-- [Zabbix 8.0: instalace z oficiálních balíčků](https://www.zabbix.com/documentation/8.0/en/manual/installation/install/packages)
-- [Zabbix 8.0: automatická registrace aktivního agenta](https://www.zabbix.com/documentation/8.0/en/manual/discovery/auto_registration)
-- [Zabbix 8.0: parametry konfigurace agenta 2](https://www.zabbix.com/documentation/8.0/en/manual/concepts/agent2/agent2_params)
+```ruby
+IMAGE_NAME = "bento/debian-13"
+
+Vagrant.configure("2") do |config|
+    config.ssh.insert_key = false
+
+    config.vm.provider "virtualbox" do |v|
+        v.memory = 2048
+        v.cpus = 2
+    end
+
+    config.vm.define "debian" do |debian|
+        debian.vm.box = IMAGE_NAME
+        debian.vm.network "forwarded_port", guest: 22, host: 2206, host_ip: "127.0.0.1"
+        debian.vm.hostname = "debian13"
+    end
+
+    config.vm.provision "file", source: "id_rsa.pub", destination: "~/.ssh/me.pub"
+    config.vm.provision "shell", inline: <<-SHELL
+        cat /home/vagrant/.ssh/me.pub >> /home/vagrant/.ssh/authorized_keys
+    SHELL
+
+    config.vm.provision "shell", path: "install-zabbix-agent2.sh"
+    config.vm.provision "shell", path: "configure-zabbix-agent2.sh"
+end
+```
+
+Poznámky:
+
+- Cesta v `source:` u `file` provisioneru se počítá od složky, kde leží Vagrantfile. Soubor `id_rsa.pub` tam proto musí existovat, jinak Vagrant skončí chybou `File upload source file ... must exist`.
+- SSH do VM je přesměrováno na `127.0.0.1:2206`.
+- Shell provisionery běží pod rootem, `sudo` není potřeba.
+
+## 3. Instalace agenta (`install-zabbix-agent2.sh`)
+
+```bash
+#!/usr/bin/env bash
+set -e
+export DEBIAN_FRONTEND=noninteractive
+
+wget -q https://repo.zabbix.com/zabbix/8.0/release/debian/pool/main/z/zabbix-release/zabbix-release_latest_8.0+debian13_all.deb
+dpkg -i zabbix-release_latest_8.0+debian13_all.deb
+apt-get update
+apt-get install -y zabbix-agent2 zabbix-agent2-plugin-mongodb zabbix-agent2-plugin-mssql zabbix-agent2-plugin-postgresql
+systemctl enable zabbix-agent2
+systemctl restart zabbix-agent2
+```
+
+- Příkazy nesmí být zakomentované (`#`), jinak se nic nenainstaluje a konfigurační soubor `/etc/zabbix/zabbix_agent2.conf` nevznikne.
+- Přepínač `-y` je nutný, protože při provisioningu nemá kdo odpovídat na dotazy apt.
+- `set -e` zastaví skript při první chybě.
+
+## 4. Konfigurace agenta (`configure-zabbix-agent2.sh`)
+
+```bash
+#!/usr/bin/env bash
+set -e
+CONF=/etc/zabbix/zabbix_agent2.conf
+
+# při opakovaném spuštění se zachová stávající unikátní hostname
+EXISTING=$(grep -E '^Hostname=kozakm-debian-' "$CONF" | cut -d= -f2 || true)
+ZBX_HOSTNAME=${EXISTING:-kozakm-debian-$(cat /proc/sys/kernel/random/uuid)}
+
+[ -f "$CONF-orig" ] || cp -v "$CONF" "$CONF-orig"
+
+sed -i -E '/^(Hostname|Server|ServerActive|HostMetadata|Timeout)=/d' "$CONF"
+cat >> "$CONF" <<EOF
+Hostname=$ZBX_HOSTNAME
+Server=enceladus.pfsense.cz
+ServerActive=enceladus.pfsense.cz
+Timeout=30
+HostMetadata=SPOS
+EOF
+
+echo "Zabbix hostname: $ZBX_HOSTNAME"
+systemctl restart zabbix-agent2
+```
+
+Co skript dělá:
+
+- Vytvoří unikátní jméno hostu ve tvaru `kozakm-debian-<uuid>`. UUID se bere z `/proc/sys/kernel/random/uuid`, takže nezávisí na balíčku `uuidgen`.
+- Smaže staré hodnoty `Hostname`, `Server`, `ServerActive`, `HostMetadata` a `Timeout` a zapíše nové, takže ho lze spouštět opakovaně.
+- Záloha původní konfigurace se vytvoří jen jednou (`zabbix_agent2.conf-orig`).
+- `HostMetadata=SPOS` používá autoregistrační akce na serveru, aby hostu přiřadila šablonu.
+
+## 5. Spuštění
+
+```powershell
+vagrant up
+```
+
+Při změně skriptů na již běžící VM:
+
+```powershell
+vagrant provision
+# nebo jen shell provisionery:
+vagrant provision --provision-with shell
+```
+
+## 6. Ověření
+
+Konfigurace agenta (soubor vyžaduje `sudo`):
+
+```powershell
+vagrant ssh -c "sudo grep -E '^(Hostname|Server|ServerActive|HostMetadata|Timeout)=' /etc/zabbix/zabbix_agent2.conf"
+```
+
+Stav služby a log:
+
+```powershell
+vagrant ssh -c "systemctl status zabbix-agent2 --no-pager"
+vagrant ssh -c "sudo tail -n 30 /var/log/zabbix/zabbix_agent2.log"
+```
+
+Na webu Zabbixu (Data collection → Hosts) vyhledejte `kozakm`. Host se objeví pod plným jménem včetně UUID, obvykle do 2–3 minut po restartu agenta. Hodnoty uvidíte v Monitoring → Latest data.
+
+## Řešení problémů
+
+| Problém | Příčina a řešení |
+|---|---|
+| `File upload source file ... id_rsa.pub must exist` | Klíč chybí nebo je cesta špatně. Vygenerujte ho (krok 1) do složky s Vagrantfilem. |
+| Host se na webu neobjeví | Instalační skript měl zakomentované příkazy, agent není nainstalovaný. Opravte skript a spusťte `vagrant provision`. |
+| Hostname je bez UUID | Původní skript ho ořezával příkazem `cut -d'-' -f1,2`. Použijte skript z kroku 4. |
+| `sed` nic nezměnil po opakovaném spuštění | Původní skript hledal výchozí hodnoty z čisté konfigurace a při druhém běhu přepsal zálohu. Skript z kroku 4 s tím problém nemá. |
+| `grep: ... Permission denied` | Konfigurace není čitelná pro uživatele `vagrant`, použijte `sudo`. |
+| Stav hostu „unknown“ (šedá ikona ZBX) | Za NATem VirtualBoxu server nedosáhne na port 10050 (pasivní kontroly). Aktivní kontroly (agent → server, port 10051) fungují, ikona se časem srovná, nebo ji ignorujte, pokud chodí data. |
+| Žádná data v Latest data | Zkontrolujte log agenta, dostupnost `enceladus.pfsense.cz:10051` (`nc -zv enceladus.pfsense.cz 10051`) a že host má přiřazenou aktivní šablonu (např. „Linux by Zabbix agent active“). |
+
+## Poznámky
+
+- Jméno hostu (`Hostname=`) po registraci neměňte, jinak se agent zaregistruje znovu jako nový host.
+- Po `vagrant destroy` se při dalším `vagrant up` vygeneruje nové UUID a vznikne nový host. Starý host na serveru zůstane nedostupný a lze ho smazat.
+- Čitelnější název na webu lze nastavit v poli **Visible name** u hostu, aniž by se změnil `Hostname=` agenta.
+- `.gitignore` doporučený obsah:
+
+```
+.vagrant/
+id_rsa
+```
